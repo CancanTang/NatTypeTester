@@ -1,34 +1,26 @@
 name: CI
-on:
-  push:
-    tags:
-      - "*"
-    branches:
-      - master
-      - renovate/**
-  pull_request:
+on: [push, pull_request, workflow_dispatch]
 env:
   ProjectName: ${{ github.event.repository.name }}
-  DOTNET_CLI_TELEMETRY_OPTOUT: 1
-  DOTNET_NOLOGO: 1
-  DOTNET_GENERATE_ASPNET_CERTIFICATE: false
-  NET_VERSION: 10.0.x
-  NET_TFM: net10.0
+  NET_TFM: net8.0-windows10.0.22621.0
+  Configuration: Release
 
 jobs:
   check_format:
-    name: Check format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-dotnet@v5
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ env.NET_VERSION }}
-      - run: dotnet workload install android
-      - run: dotnet format -v diag --verify-no-changes
+          dotnet-version: 8.0.x
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run dotnet format check
+        run: dotnet format -v diag --verify-no-changes
 
   test:
-    name: Run tests
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -38,162 +30,60 @@ jobs:
           - macos-latest
 
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-dotnet@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ env.NET_VERSION }}
-      - run: dotnet test --project tests/UnitTest/UnitTest.csproj -c Release
+          dotnet-version: 8.0.x
+
+      - name: Run tests
+        working-directory: UnitTest
+        run: dotnet test -c Release
 
   build:
-    name: Build ${{ matrix.project }} (${{ matrix.rid }})
     needs: [test, check_format]
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        project:
-          - Desktop
-          - Console
-        rid:
-          - win-x64
-          - linux-x64
-          - linux-arm64
-          - osx-arm64
+    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
         with:
-          fetch-depth: 0
-          filter: tree:0
-      - uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: ${{ env.NET_VERSION }}
+          dotnet-version: 8.0.x
 
       - name: Build
-        working-directory: src/${{ env.ProjectName }}.${{ matrix.project }}
-        run: dotnet publish -r ${{ matrix.rid }}
-
-      - name: Upload
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.ProjectName }}.${{ matrix.project }}-${{ matrix.rid }}
-          path: src/${{ env.ProjectName }}.${{ matrix.project }}/bin/Release/${{ env.NET_TFM }}/${{ matrix.rid }}/publish/
-
-  build_android:
-    name: Build Android (${{ matrix.rid }})
-    needs: [test, check_format]
-    if: ${{ github.event_name == 'push' }}
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rid:
-          - android-arm64
-          - android-x64
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          filter: tree:0
-      - uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: ${{ env.NET_VERSION }}
-      - run: dotnet workload install android
-
-      - name: Cache Android dependencies
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/android-sdk
-            ~/jdk
-          key: android-deps-${{ env.NET_TFM }}-android
-
-      - name: Install Android dependencies
-        working-directory: src/${{ env.ProjectName }}.Android
-        run: dotnet build -t:InstallAndroidDependencies -p:AndroidSdkDirectory=$HOME/android-sdk -p:JavaSdkDirectory=$HOME/jdk -p:AcceptAndroidSDKLicenses=true
-
-      - name: Decode keystore
-        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > $GITHUB_WORKSPACE/release.keystore
-
-      - name: Build
-        working-directory: src/${{ env.ProjectName }}.Android
-        run: >
-          dotnet publish
-          -r ${{ matrix.rid }}
-          -p:AndroidKeyStore=true
-          -p:AndroidSigningKeyStore=$GITHUB_WORKSPACE/release.keystore
-          -p:AndroidSigningStorePass=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          -p:AndroidSigningKeyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
-          -p:AndroidSigningKeyPass=${{ secrets.ANDROID_KEY_PASSWORD }}
-
-      - name: Rename APK
-        working-directory: src/${{ env.ProjectName }}.Android
+        shell: pwsh
         run: |
-          apk_dir="bin/Release/${{ env.NET_TFM }}-android/${{ matrix.rid }}/publish"
-          mv "${apk_dir}"/*-Signed.apk "${apk_dir}/${{ env.ProjectName }}-${{ matrix.rid }}.apk"
+          .\build.ps1
+          .\build.WinUI.ps1 x64
+          .\build.WinUI.ps1 arm64
 
       - name: Upload
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ProjectName }}-${{ matrix.rid }}
-          path: src/${{ env.ProjectName }}.Android/bin/Release/${{ env.NET_TFM }}-android/${{ matrix.rid }}/publish/${{ env.ProjectName }}-${{ matrix.rid }}.apk
+          name: ${{ env.ProjectName }}
+          path: ${{ env.ProjectName }}\bin\${{ env.Configuration }}\${{ env.NET_TFM }}\generic\publish\
 
-  build_android_universal:
-    name: Build Android (universal)
-    needs: [test, check_format]
-    if: ${{ github.event_name == 'push' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
+      - name: Upload WinUI x64
+        uses: actions/upload-artifact@v4
         with:
-          fetch-depth: 0
-          filter: tree:0
-      - uses: actions/setup-dotnet@v5
+          name: ${{ env.ProjectName }}.WinUI.x64
+          path: ${{ env.ProjectName }}.WinUI\bin\x64\${{ env.Configuration }}\${{ env.NET_TFM }}\win-x64\publish\
+
+      - name: Upload WinUI arm64
+        uses: actions/upload-artifact@v4
         with:
-          dotnet-version: ${{ env.NET_VERSION }}
-      - run: dotnet workload install android
-
-      - name: Cache Android dependencies
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/android-sdk
-            ~/jdk
-          key: android-deps-${{ env.NET_TFM }}-android
-
-      - name: Install Android dependencies
-        working-directory: src/${{ env.ProjectName }}.Android
-        run: dotnet build -t:InstallAndroidDependencies -p:AndroidSdkDirectory=$HOME/android-sdk -p:JavaSdkDirectory=$HOME/jdk -p:AcceptAndroidSDKLicenses=true
-
-      - name: Decode keystore
-        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > $GITHUB_WORKSPACE/release.keystore
-
-      - name: Build
-        working-directory: src/${{ env.ProjectName }}.Android
-        run: >
-          dotnet publish
-          -p:AndroidKeyStore=true
-          -p:AndroidSigningKeyStore=$GITHUB_WORKSPACE/release.keystore
-          -p:AndroidSigningStorePass=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          -p:AndroidSigningKeyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
-          -p:AndroidSigningKeyPass=${{ secrets.ANDROID_KEY_PASSWORD }}
-
-      - name: Rename APK
-        working-directory: src/${{ env.ProjectName }}.Android
-        run: |
-          apk_dir="bin/Release/${{ env.NET_TFM }}-android/publish"
-          mv "${apk_dir}"/*-Signed.apk "${apk_dir}/${{ env.ProjectName }}-android-universal.apk"
-
-      - name: Upload
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.ProjectName }}-android-universal
-          path: src/${{ env.ProjectName }}.Android/bin/Release/${{ env.NET_TFM }}-android/publish/${{ env.ProjectName }}-android-universal.apk
+          name: ${{ env.ProjectName }}.WinUI.arm64
+          path: ${{ env.ProjectName }}.WinUI\bin\arm64\${{ env.Configuration }}\${{ env.NET_TFM }}\win-arm64\publish\
 
   nuget:
-    name: Push NuGet (${{ matrix.PackageName }})
     needs: [test, check_format]
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       packages: write
     strategy:
       matrix:
@@ -201,58 +91,79 @@ jobs:
           - STUN
 
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          filter: tree:0
-      - uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: ${{ env.NET_VERSION }}
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Pack
-        working-directory: src/${{ matrix.PackageName }}
-        run: dotnet pack
-
-      - name: NuGet Login
-        uses: NuGet/login@v1
-        id: nuget-login
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
         with:
-          user: ${{ secrets.NUGET_USER }}
+          dotnet-version: 8.0.x
+
+      - name: Build
+        working-directory: ${{ matrix.PackageName }}
+        run: dotnet build -c Release
 
       - name: Push nuget packages
-        working-directory: src/${{ matrix.PackageName }}/bin/Release
+        working-directory: ${{ matrix.PackageName }}/bin/Release
         run: |
-          dotnet nuget push *.nupkg -s https://api.nuget.org/v3/index.json -k ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --skip-duplicate
           dotnet nuget push *.nupkg -s https://nuget.pkg.github.com/HMBSbige -k ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
+          dotnet nuget push *.nupkg -s https://api.nuget.org/v3/index.json -k ${{ secrets.NuGetAPIKey }} --skip-duplicate
 
   release:
-    name: Release
-    needs: [build, build_android, build_android_universal, nuget]
+    needs: [build, nuget]
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ProjectName }}
+          path: ${{ env.ProjectName }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ProjectName }}.WinUI.x64
+          path: ${{ env.ProjectName }}.WinUI.x64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ProjectName }}.WinUI.arm64
+          path: ${{ env.ProjectName }}.WinUI.arm64
 
       - name: Package
+        shell: pwsh
         run: |
-          mkdir -p builtfiles
-          for rid in win-x64 linux-x64 linux-arm64 osx-arm64; do
-            7z a -mx9 "builtfiles/${{ env.ProjectName }}-${{ github.ref_name }}-${rid}.7z" "${{ env.ProjectName }}.Desktop-${rid}"
-            7z a -mx9 "builtfiles/${{ env.ProjectName }}.Console-${{ github.ref_name }}-${rid}.7z" "${{ env.ProjectName }}.Console-${rid}"
-          done
-          for variant in android-arm64 android-x64 android-universal; do
-            cp "${{ env.ProjectName }}-${variant}/${{ env.ProjectName }}-${variant}.apk" "builtfiles/${{ env.ProjectName }}-${{ github.ref_name }}-${variant}.apk"
-          done
+          New-Item -ItemType Directory -Path builtfiles -Force > $null
+          $zip_path = "builtfiles/$env:ProjectName-${{ github.ref_name }}.7z"
+          7z a -mx9 "$zip_path" ${{ env.ProjectName }}
+          echo "GENERIC_SHA256=$((Get-FileHash $zip_path -Algorithm SHA256).Hash)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Package WinUI x64
+        shell: pwsh
+        run: |
+          $zip_path = "builtfiles/$env:ProjectName-${{ github.ref_name }}-x64.7z"
+          7z a -mx9 "$zip_path" ${{ env.ProjectName }}.WinUI.x64
+          echo "X64_SHA256=$((Get-FileHash $zip_path -Algorithm SHA256).Hash)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Package WinUI arm64
+        shell: pwsh
+        run: |
+          $zip_path = "builtfiles/$env:ProjectName-${{ github.ref_name }}-arm64.7z"
+          7z a -mx9 "$zip_path" ${{ env.ProjectName }}.WinUI.arm64
+          echo "ARM64_SHA256=$((Get-FileHash $zip_path -Algorithm SHA256).Hash)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Create a new GitHub release
         uses: ncipollo/release-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          allowUpdates: true
-          artifactErrorsFailBuild: true
+          prerelease: true
+          draft: false
           artifacts: builtfiles/*
-          immutableCreate: true
-          updateOnlyUnreleased: true
+          body: |
+            ## Hash
+            | Filename | SHA-256 |
+            | :- | :- |
+            | <sub>${{ env.ProjectName }}-${{ github.ref_name }}.7z</sub> | <sub>${{ env.GENERIC_SHA256 }}</sub> |
+            | <sub>${{ env.ProjectName }}-${{ github.ref_name }}-x64.7z</sub> | <sub>${{ env.X64_SHA256 }}</sub> |
+            | <sub>${{ env.ProjectName }}-${{ github.ref_name }}-arm64.7z</sub> | <sub>${{ env.ARM64_SHA256 }}</sub> |
